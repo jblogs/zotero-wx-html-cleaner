@@ -1,0 +1,21 @@
+{
+  "manifest_version": 2,
+  "name": "WeChat HTML Cleaner",
+  "version": "2.0.2",
+  "description": "Clean WeChat article HTML content by removing styles and fonts - Optimized user experience with silent success mode",
+  "homepage_url": "https://github.com/your-username/zotero-wx-html-cleaner",
+  "author": "Zotero Plugin Developer",
+  
+  "applications": {
+    "zotero": {
+      "id": "wx-html-cleaner@zotero.org",
+      "update_url": "https://github.com/your-username/zotero-wx-html-cleaner/releases/latest/download/update.json",
+      "strict_min_version": "7.0.0",
+      "strict_max_version": "7.*"
+    }
+  },
+
+  "legacy": {
+    "type": "extension"
+  }
+}
