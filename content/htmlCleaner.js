@@ -1,22 +1,30 @@
 /**
- * HTML清理工具 - 移除CSS和字体设置，保留文字和图片内容
- * 专门针对SingleFile保存的微信公众号文章
- * 版本: 2.0.1 - 完全复刻命令行版本的逻辑
+ * HTML清理和瘦身工具 - Zotero插件版本
+ * 基于html_cleaner2.mjs的逻辑，适配Zotero插件环境
+ * 版本: 3.0.0 - 使用html_cleaner2.mjs的完整逻辑
  */
 class HTMLCleaner {
     constructor() {
         this.preservedTags = new Set([
             'html', 'head', 'body', 'title', 'meta',
             'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-            'p', 'div', 'span', 'a', 'img', 'br',
-            'strong', 'b', 'em', 'i', 'u',
-            'ul', 'ol', 'li', 'blockquote',
-            'table', 'tr', 'td', 'th', 'thead', 'tbody'
+            'p', 'div', 'span', 'section', 'article',
+            'strong', 'em', 'b', 'i', 'u',
+            'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+            'a', 'img', 'figure', 'figcaption',
+            'code', 'pre', 'blockquote',
+            'table', 'thead', 'tbody', 'tr', 'td', 'th',
+            'br', 'hr'
+        ]);
+        
+        this.removedAttributes = new Set([
+            'style', 'class', 'id', 'onclick', 'onload', 'onerror',
+            'data-*', 'aria-*', 'role', 'tabindex'
         ]);
         
         this.preservedAttributes = new Set([
-            'charset', 'content', 'name', 'property',
-            'href', 'src', 'alt', 'title', 'id'
+            'href', 'src', 'alt', 'title', 'target',
+            'charset', 'content', 'name', 'http-equiv'
         ]);
     }
 
@@ -28,27 +36,18 @@ class HTMLCleaner {
     async cleanHTMLContent(htmlContent) {
         try {
             this.log('开始清理HTML内容...');
-            
-            // 在Zotero环境中使用DOMParser而不是JSDOM
-            const parser = new DOMParser();
-            const document = parser.parseFromString(htmlContent, 'text/html');
-            
-            // 执行清理操作
-            this.removeStyleElements(document);
-            this.removeInlineStyles(document);
-            this.removeFontRelatedAttributes(document);
-            this.removeClassAttributes(document);
-            this.removeUnnecessaryAttributes(document);
-            this.simplifyMetaTags(document);
-            this.preserveEssentialContent(document);
-            
-            // 生成清理后的HTML
-            const cleanedHTML = this.generateCleanHTML(document);
-            
             this.log(`原文件大小: ${(htmlContent.length / 1024).toFixed(2)} KB`);
-            this.log(`清理后大小: ${(cleanedHTML.length / 1024).toFixed(2)} KB`);
             
-            return cleanedHTML;
+            // 在Zotero环境中创建DOM文档
+            const document = this.createDocument(htmlContent);
+            
+            // 执行清理操作 - 使用html_cleaner2.mjs的逻辑
+            const cleanedHtml = this.clean(document);
+            
+            this.log(`清理后大小: ${(cleanedHtml.length / 1024).toFixed(2)} KB`);
+            this.log('HTML清理完成');
+            
+            return cleanedHtml;
         } catch (error) {
             this.error('处理HTML内容时出错:', error);
             return htmlContent; // 出错时返回原内容
@@ -56,69 +55,369 @@ class HTMLCleaner {
     }
 
     /**
-     * 移除所有style标签
+     * 在Zotero环境中创建DOM文档
      */
-    removeStyleElements(document) {
-        const styleElements = document.querySelectorAll('style');
-        styleElements.forEach(element => element.remove());
-        this.log(`移除了 ${styleElements.length} 个 <style> 标签`);
+    createDocument(htmlContent) {
+        try {
+            // 尝试使用Zotero的内置DOM解析器
+            if (typeof Components !== 'undefined' && Components.classes) {
+                const parser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
+                    .createInstance(Components.interfaces.nsIDOMParser);
+                return parser.parseFromString(htmlContent, "text/html");
+            }
+            
+            // 备用方案：使用标准DOMParser
+            if (typeof DOMParser !== 'undefined') {
+                const parser = new DOMParser();
+                return parser.parseFromString(htmlContent, 'text/html');
+            }
+            
+            // 最后备用方案：创建一个简单的文档对象
+            throw new Error('无法创建DOM解析器');
+            
+        } catch (error) {
+            this.error('创建DOM文档失败:', error);
+            // 使用字符串处理作为最后的备用方案
+            return this.createFallbackDocument(htmlContent);
+        }
     }
 
     /**
-     * 移除所有内联样式
+     * 备用文档创建方法
      */
-    removeInlineStyles(document) {
-        const elementsWithStyle = document.querySelectorAll('[style]');
-        let count = 0;
-        elementsWithStyle.forEach(element => {
-            element.removeAttribute('style');
-            count++;
-        });
-        this.log(`移除了 ${count} 个内联样式属性`);
+    createFallbackDocument(htmlContent) {
+        // 创建一个模拟的文档对象，用于字符串处理
+        return {
+            documentElement: {
+                innerHTML: htmlContent
+            },
+            body: {
+                innerHTML: this.extractBodyContent(htmlContent)
+            },
+            head: {
+                innerHTML: this.extractHeadContent(htmlContent)
+            },
+            querySelectorAll: (selector) => [],
+            querySelector: (selector) => null,
+            createElement: (tagName) => ({ tagName: tagName.toUpperCase() })
+        };
     }
 
     /**
-     * 移除字体相关属性
+     * 提取body内容
      */
-    removeFontRelatedAttributes(document) {
-        const fontAttributes = ['font-family', 'font-size', 'font-weight', 'color'];
-        const allElements = document.querySelectorAll('*');
+    extractBodyContent(htmlContent) {
+        const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        return bodyMatch ? bodyMatch[1] : htmlContent;
+    }
+
+    /**
+     * 提取head内容
+     */
+    extractHeadContent(htmlContent) {
+        const headMatch = htmlContent.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+        return headMatch ? headMatch[1] : '';
+    }
+
+    /**
+     * 清理HTML文档 - 核心清理方法
+     */
+    clean(document) {
+        this.log('开始执行清理操作...');
         
-        allElements.forEach(element => {
-            fontAttributes.forEach(attr => {
-                if (element.hasAttribute && element.hasAttribute(attr)) {
-                    element.removeAttribute(attr);
+        try {
+            // 检查是否是真实的DOM文档
+            if (this.isRealDocument(document)) {
+                return this.cleanWithDOM(document);
+            } else {
+                // 使用字符串处理方法
+                return this.cleanWithString(document);
+            }
+        } catch (error) {
+            this.error('清理过程出错，使用备用方法', error);
+            return this.cleanWithString(document);
+        }
+    }
+
+    /**
+     * 检查是否是真实的DOM文档
+     */
+    isRealDocument(document) {
+        return document && 
+               typeof document.querySelectorAll === 'function' &&
+               typeof document.createElement === 'function' &&
+               document.documentElement;
+    }
+
+    /**
+     * 使用DOM方法清理
+     */
+    cleanWithDOM(document) {
+        this.log('使用DOM方法清理');
+        
+        // 1. 移除所有style和script标签
+        this.log('步骤1: 移除样式和脚本');
+        this.removeStylesAndScripts(document);
+
+        // 2. 清理meta标签，只保留必要的
+        this.log('步骤2: 清理meta标签');
+        this.cleanMetaTags(document);
+
+        // 3. 简化HTML结构
+        this.log('步骤3: 简化HTML结构');
+        this.simplifyStructure(document);
+
+        // 4. 清理属性
+        this.log('步骤4: 清理元素属性');
+        this.cleanAttributes(document);
+
+        // 5. 移除空标签和无用标签
+        this.log('步骤5: 移除空标签');
+        this.removeEmptyTags(document);
+
+        // 6. 优化文本内容
+        this.log('步骤6: 优化文本内容');
+        this.optimizeTextContent(document);
+
+        this.log('DOM清理操作完成，开始序列化...');
+        return this.serializeDocument(document);
+    }
+
+    /**
+     * 使用字符串方法清理
+     */
+    cleanWithString(document) {
+        this.log('使用字符串方法清理');
+        
+        let htmlContent = '';
+        if (document.documentElement && document.documentElement.innerHTML) {
+            htmlContent = document.documentElement.innerHTML;
+        } else if (document.innerHTML) {
+            htmlContent = document.innerHTML;
+        } else {
+            htmlContent = document.toString();
+        }
+
+        // 执行字符串清理
+        htmlContent = this.stringCleanHTML(htmlContent);
+        
+        return htmlContent;
+    }
+
+    /**
+     * 字符串清理方法
+     */
+    stringCleanHTML(htmlContent) {
+        this.log('执行字符串清理...');
+        
+        // 1. 移除style标签和内容
+        htmlContent = htmlContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        
+        // 2. 移除script标签和内容
+        htmlContent = htmlContent.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+        
+        // 3. 移除link样式表
+        htmlContent = htmlContent.replace(/<link[^>]*rel=["']stylesheet["'][^>]*>/gi, '');
+        
+        // 4. 移除内联样式属性
+        htmlContent = htmlContent.replace(/\s+style=["'][^"']*["']/gi, '');
+        
+        // 5. 移除class属性
+        htmlContent = htmlContent.replace(/\s+class=["'][^"']*["']/gi, '');
+        
+        // 6. 移除id属性（保留一些重要的）
+        htmlContent = htmlContent.replace(/\s+id=["'](?!js_content|js_author|js_name)[^"']*["']/gi, '');
+        
+        // 7. 移除事件处理属性
+        htmlContent = htmlContent.replace(/\s+on\w+=["'][^"']*["']/gi, '');
+        
+        // 8. 移除data-*属性（保留重要的）
+        htmlContent = htmlContent.replace(/\s+data-(?!src|alt)[^=]*=["'][^"']*["']/gi, '');
+        
+        // 9. 清理多余的空白
+        htmlContent = htmlContent.replace(/\s+/g, ' ');
+        htmlContent = htmlContent.replace(/>\s+</g, '><');
+        
+        // 10. 构建基本的HTML结构
+        const titleMatch = htmlContent.match(/<title[^>]*>(.*?)<\/title>/i);
+        const title = titleMatch ? titleMatch[1] : '清理后的文档';
+        
+        const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const bodyContent = bodyMatch ? bodyMatch[1] : htmlContent;
+        
+        const cleanHTML = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${title}</title>
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+        
+        this.log('字符串清理完成');
+        return cleanHTML;
+    }
+
+    /**
+     * 移除所有CSS样式和JavaScript
+     */
+    removeStylesAndScripts(document) {
+        // 移除style标签
+        const styleElements = document.querySelectorAll('style');
+        styleElements.forEach(el => el.remove());
+        this.log(`移除了 ${styleElements.length} 个 <style> 标签`);
+
+        // 移除script标签
+        const scriptElements = document.querySelectorAll('script');
+        scriptElements.forEach(el => el.remove());
+
+        // 移除link标签中的样式表
+        const linkElements = document.querySelectorAll('link[rel="stylesheet"]');
+        linkElements.forEach(el => el.remove());
+    }
+
+    /**
+     * 清理meta标签，只保留编码相关的
+     */
+    cleanMetaTags(document) {
+        const metaElements = document.querySelectorAll('meta');
+        metaElements.forEach(meta => {
+            const charset = meta.getAttribute('charset');
+            const httpEquiv = meta.getAttribute('http-equiv');
+            const name = meta.getAttribute('name');
+            
+            // 只保留编码相关的meta标签
+            if (!charset && 
+                httpEquiv !== 'Content-Type' && 
+                name !== 'viewport' &&
+                name !== 'description') {
+                meta.remove();
+            }
+        });
+    }
+
+    /**
+     * 简化HTML结构
+     */
+    simplifyStructure(document) {
+        // 移除不必要的div嵌套
+        this.unwrapUnnecessaryDivs(document);
+        
+        // 移除微信特定的标签和属性
+        this.removeWechatSpecificElements(document);
+        
+        // 移除导航、侧边栏等非内容区域
+        this.removeNonContentAreas(document);
+        
+        // 移除HTML注释
+        this.removeComments(document);
+        
+        // 简化meta标签
+        this.simplifyMetaTags(document);
+        
+        // 移除多余的空白和换行
+        this.removeExtraWhitespace(document);
+    }
+
+    /**
+     * 展开不必要的div嵌套
+     */
+    unwrapUnnecessaryDivs(document) {
+        let changed = true;
+        while (changed) {
+            changed = false;
+            const divs = document.querySelectorAll('div');
+            
+            divs.forEach(div => {
+                // 如果div只有一个子元素且没有有用的属性，考虑展开
+                if (div.children.length === 1 && 
+                    !this.hasPreservedAttributes(div) &&
+                    !this.hasSignificantTextContent(div)) {
+                    
+                    const child = div.children[0];
+                    // 避免创建无意义的嵌套
+                    if (child.tagName !== 'DIV' || this.hasPreservedAttributes(child)) {
+                        try {
+                            div.parentNode.replaceChild(child, div);
+                            changed = true;
+                        } catch (e) {
+                            // 忽略替换失败的情况
+                        }
+                    }
+                }
+                
+                // 移除空的div
+                else if (!div.textContent.trim() && 
+                         div.children.length === 0 &&
+                         !this.hasPreservedAttributes(div)) {
+                    div.remove();
+                    changed = true;
                 }
             });
-        });
+        }
     }
 
     /**
-     * 移除class属性
+     * 移除微信特定的元素
      */
-    removeClassAttributes(document) {
-        const elementsWithClass = document.querySelectorAll('[class]');
-        let count = 0;
-        elementsWithClass.forEach(element => {
-            element.removeAttribute('class');
-            count++;
-        });
-        this.log(`移除了 ${count} 个 class 属性`);
-    }
-
-    /**
-     * 移除不必要的属性
-     */
-    removeUnnecessaryAttributes(document) {
-        const allElements = document.querySelectorAll('*');
+    removeWechatSpecificElements(document) {
+        // 移除微信相关的特定元素
+        const wechatSelectors = [
+            'mpvoice',
+            'mpcps',
+            'mpprofile'
+        ];
         
+        wechatSelectors.forEach(selector => {
+            try {
+                const elements = document.querySelectorAll(selector);
+                elements.forEach(el => el.remove());
+            } catch (e) {
+                // 忽略无效的选择器
+            }
+        });
+    }
+
+    /**
+     * 移除非内容区域
+     */
+    removeNonContentAreas(document) {
+        const nonContentSelectors = [
+            'nav', 'header', 'footer', 'aside',
+            '.navigation', '.sidebar', '.menu',
+            '.advertisement', '.ad', '.banner'
+        ];
+        
+        nonContentSelectors.forEach(selector => {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(el => el.remove());
+        });
+    }
+
+    /**
+     * 清理元素属性
+     */
+    cleanAttributes(document) {
+        const allElements = document.querySelectorAll('*');
         allElements.forEach(element => {
-            const attributes = Array.from(element.attributes || []);
+            const attributes = Array.from(element.attributes);
             attributes.forEach(attr => {
-                if (!this.preservedAttributes.has(attr.name) && 
-                    !attr.name.startsWith('data-') && 
-                    attr.name !== 'role' && 
-                    attr.name !== 'tabindex') {
+                const attrName = attr.name.toLowerCase();
+                
+                // 移除样式相关属性
+                if (attrName === 'style' || 
+                    attrName === 'class' || 
+                    attrName.startsWith('data-') ||
+                    attrName.startsWith('aria-') ||
+                    attrName.startsWith('on')) {
+                    
+                    // 保留一些重要的data属性
+                    if (attrName === 'data-src' || attrName === 'data-alt') {
+                        return;
+                    }
+                    
                     element.removeAttribute(attr.name);
                 }
             });
@@ -126,96 +425,256 @@ class HTMLCleaner {
     }
 
     /**
-     * 简化meta标签，只保留必要的编码和描述信息
+     * 移除空标签和无用标签
+     */
+    removeEmptyTags(document) {
+        let changed = true;
+        while (changed) {
+            changed = false;
+            const allElements = document.querySelectorAll('*');
+            
+            allElements.forEach(element => {
+                if (this.shouldRemoveElement(element)) {
+                    element.remove();
+                    changed = true;
+                }
+            });
+        }
+    }
+
+    /**
+     * 判断是否应该移除元素
+     */
+    shouldRemoveElement(element) {
+        const tagName = element.tagName.toLowerCase();
+        
+        // 不移除这些重要标签
+        if (['html', 'head', 'body', 'title', 'meta', 'img', 'br', 'hr'].includes(tagName)) {
+            return false;
+        }
+        
+        // 移除空的且没有重要属性的元素
+        if (!element.textContent.trim() && 
+            element.children.length === 0 &&
+            !this.hasPreservedAttributes(element)) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * 检查元素是否有需要保留的属性
+     */
+    hasPreservedAttributes(element) {
+        const attributes = Array.from(element.attributes);
+        return attributes.some(attr => 
+            this.preservedAttributes.has(attr.name.toLowerCase())
+        );
+    }
+
+    /**
+     * 检查元素是否有重要的文本内容
+     */
+    hasSignificantTextContent(element) {
+        const text = element.textContent.trim();
+        return text.length > 0 && text.length > 10; // 至少10个字符才算有意义
+    }
+
+    /**
+     * 优化文本内容
+     */
+    optimizeTextContent(document) {
+        // 清理多余的空白字符
+        const textNodes = this.getAllTextNodes(document.body);
+        textNodes.forEach(node => {
+            node.textContent = node.textContent.replace(/\s+/g, ' ').trim();
+        });
+    }
+
+    /**
+     * 获取所有文本节点
+     */
+    getAllTextNodes(element) {
+        const textNodes = [];
+        if (!element) return textNodes;
+        
+        const walker = element.ownerDocument.createTreeWalker(
+            element,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        
+        let node;
+        while (node = walker.nextNode()) {
+            if (node.textContent.trim()) {
+                textNodes.push(node);
+            }
+        }
+        
+        return textNodes;
+    }
+
+    /**
+     * 移除HTML注释
+     */
+    removeComments(document) {
+        const walker = document.createTreeWalker(
+            document,
+            NodeFilter.SHOW_COMMENT,
+            null,
+            false
+        );
+        
+        const comments = [];
+        let node;
+        while (node = walker.nextNode()) {
+            comments.push(node);
+        }
+        
+        comments.forEach(comment => comment.remove());
+    }
+
+    /**
+     * 简化meta标签
      */
     simplifyMetaTags(document) {
-        const metaTags = document.querySelectorAll('meta');
-        const essentialMetas = new Set(['charset', 'description', 'author']);
-        
-        metaTags.forEach(meta => {
+        const metaElements = document.querySelectorAll('meta');
+        metaElements.forEach(meta => {
+            const charset = meta.getAttribute('charset');
             const name = meta.getAttribute('name');
-            const property = meta.getAttribute('property');
-            const httpEquiv = meta.getAttribute('http-equiv');
             
-            // 保留charset meta标签
-            if (meta.hasAttribute('charset')) {
-                return;
+            // 只保留最基本的meta标签
+            if (!charset && name !== 'viewport') {
+                meta.remove();
             }
-            
-            // 保留基本的meta信息
-            if (name && essentialMetas.has(name)) {
-                return;
-            }
-            
-            // 移除其他meta标签
-            meta.remove();
         });
     }
 
     /**
-     * 保留核心内容元素
+     * 移除多余的空白和换行
      */
-    preserveEssentialContent(document) {
-        // 确保保留文章标题
-        const title = document.querySelector('h1');
-        if (title) {
-            title.setAttribute('id', 'article-title');
+    removeExtraWhitespace(document) {
+        // 移除head中的多余空白
+        const head = document.head;
+        if (head) {
+            this.cleanWhitespaceInElement(head);
         }
-
-        // 确保保留图片的src属性
-        const images = document.querySelectorAll('img');
-        images.forEach(img => {
-            if (!img.hasAttribute('src') && img.hasAttribute('data-src')) {
-                img.setAttribute('src', img.getAttribute('data-src'));
-                img.removeAttribute('data-src');
-            }
-        });
-
-        // 移除空的div和span元素
-        this.removeEmptyElements(document);
+        
+        // 移除body中的多余空白
+        const body = document.body;
+        if (body) {
+            this.cleanWhitespaceInElement(body);
+        }
     }
 
     /**
-     * 移除空的元素
+     * 清理元素中的空白
      */
-    removeEmptyElements(document) {
-        const emptyElements = document.querySelectorAll('div:empty, span:empty, p:empty');
-        emptyElements.forEach(element => {
-            if (element.textContent.trim() === '' && element.children.length === 0) {
-                element.remove();
+    cleanWhitespaceInElement(element) {
+        if (!element) return;
+        
+        const walker = element.ownerDocument.createTreeWalker(
+            element,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        
+        const textNodes = [];
+        let node;
+        while (node = walker.nextNode()) {
+            textNodes.push(node);
+        }
+        
+        textNodes.forEach(textNode => {
+            // 如果是纯空白的文本节点，且不在重要标签内，则移除
+            if (/^\s+$/.test(textNode.textContent)) {
+                const parent = textNode.parentNode;
+                if (parent && !['pre', 'code', 'textarea'].includes(parent.tagName.toLowerCase())) {
+                    textNode.remove();
+                }
             }
         });
     }
 
     /**
-     * 生成清理后的HTML
+     * 序列化文档为HTML字符串
      */
-    generateCleanHTML(document) {
-        // 添加基本的UTF-8编码声明
+    serializeDocument(document) {
+        try {
+            // 尝试使用Zotero的内置序列化器
+            if (typeof Components !== 'undefined' && Components.classes) {
+                const serializer = Components.classes["@mozilla.org/xmlextras/xmlserializer;1"]
+                    .createInstance(Components.interfaces.nsIDOMSerializer);
+                return serializer.serializeToString(document);
+            }
+            
+            // 备用方案：使用标准XMLSerializer
+            if (typeof XMLSerializer !== 'undefined') {
+                const serializer = new XMLSerializer();
+                return serializer.serializeToString(document);
+            }
+            
+            // 最后备用方案：使用字符串拼接
+            return this.fallbackSerialize(document);
+            
+        } catch (error) {
+            this.error('序列化文档失败:', error);
+            return this.fallbackSerialize(document);
+        }
+    }
+
+    /**
+     * 备用序列化方法
+     */
+    fallbackSerialize(document) {
+        try {
+            // 如果是模拟文档对象，直接返回处理后的HTML
+            if (document.documentElement && document.documentElement.innerHTML) {
+                return this.buildCleanHTML(document);
+            }
+            
+            // 如果有innerHTML属性，使用它
+            if (document.innerHTML) {
+                return document.innerHTML;
+            }
+            
+            // 如果有outerHTML属性，使用它
+            if (document.outerHTML) {
+                return document.outerHTML;
+            }
+            
+            // 最后的备用方案
+            return this.buildBasicHTML(document);
+            
+        } catch (error) {
+            this.error('备用序列化失败:', error);
+            return '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><p>HTML清理失败</p></body></html>';
+        }
+    }
+
+    /**
+     * 构建清理后的HTML
+     */
+    buildCleanHTML(document) {
         let html = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n';
         
         // 添加标题
-        const titleElement = document.querySelector('title');
-        if (titleElement) {
-            html += `<title>${titleElement.textContent}</title>\n`;
-        }
-        
-        // 添加基本的meta信息
-        const description = document.querySelector('meta[name="description"]');
-        if (description) {
-            html += `<meta name="description" content="${description.getAttribute('content')}">\n`;
-        }
-        
-        const author = document.querySelector('meta[name="author"]');
-        if (author) {
-            html += `<meta name="author" content="${author.getAttribute('content')}">\n`;
+        if (document.head && document.head.innerHTML) {
+            const titleMatch = document.head.innerHTML.match(/<title[^>]*>(.*?)<\/title>/i);
+            if (titleMatch) {
+                html += `<title>${titleMatch[1]}</title>\n`;
+            }
         }
         
         html += '</head>\n<body>\n';
         
-        // 添加主要内容
-        const bodyContent = this.extractBodyContent(document);
-        html += bodyContent;
+        // 添加body内容
+        if (document.body && document.body.innerHTML) {
+            html += document.body.innerHTML;
+        }
         
         html += '\n</body>\n</html>';
         
@@ -223,665 +682,36 @@ class HTMLCleaner {
     }
 
     /**
-     * 提取body内容
+     * 构建基本HTML结构
      */
-    extractBodyContent(document) {
-        let content = '';
-        
-        // 提取标题
-        const title = document.querySelector('h1');
-        if (title) {
-            content += `<h1>${title.textContent.trim()}</h1>\n\n`;
-        }
-        
-        // 提取作者和时间信息
-        const authorElement = document.querySelector('#js_author_name, [id*="author"]');
-        if (authorElement && authorElement.textContent.trim()) {
-            content += `<p><strong>作者:</strong> ${authorElement.textContent.trim()}</p>\n`;
-        }
-        
-        const timeElement = document.querySelector('#publish_time, [id*="time"]');
-        if (timeElement && timeElement.textContent.trim()) {
-            content += `<p><strong>发布时间:</strong> ${timeElement.textContent.trim()}</p>\n`;
-        }
-        
-        const locationElement = document.querySelector('#js_ip_wording, [id*="ip"]');
-        if (locationElement && locationElement.textContent.trim()) {
-            content += `<p><strong>地区:</strong> ${locationElement.textContent.trim()}</p>\n\n`;
-        }
-        
-        // 查找主要内容区域
-        const mainContentArea = this.findMainContentArea(document);
-        if (mainContentArea) {
-            content += this.extractContentFromArea(mainContentArea);
-        } else {
-            // 只有在没有找到主要内容区域时才使用备用方法
-            const fallbackContent = this.extractContentFallback(document);
-            if (fallbackContent.trim()) {
-                content += fallbackContent;
-            }
-        }
-        
-        return content;
+    buildBasicHTML(document) {
+        return '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<title>清理后的文档</title>\n</head>\n<body>\n<p>文档已清理</p>\n</body>\n</html>';
     }
 
     /**
-     * 查找主要内容区域
+     * 日志输出
      */
-    findMainContentArea(document) {
-        // 尝试查找微信公众号文章的主要内容区域
-        const selectors = [
-            '#js_content',
-            '.rich_media_content',
-            '[id*="content"]',
-            '[class*="content"]',
-            'article',
-            'main'
-        ];
-        
-        for (const selector of selectors) {
-            const element = document.querySelector(selector);
-            if (element && element.textContent.trim().length > 100) {
-                return element;
-            }
-        }
-        
-        return null;
-    }
-
-    /**
-     * 从指定区域提取内容
-     */
-    extractContentFromArea(area) {
-        let content = '';
-        const processedElements = new Set(); // 用于去重
-        
-        // 在Zotero环境中，使用更兼容的方式遍历DOM节点
-        const walker = this.createCompatibleTreeWalker(area);
-        
-        let node;
-        while (node = walker.nextNode()) {
-            if (processedElements.has(node)) continue;
-            
-            // 处理图片
-            if (node.tagName === 'IMG') {
-                const src = node.getAttribute('src') || node.getAttribute('data-src');
-                const alt = node.getAttribute('alt') || '';
-                if (src && !src.includes('data:image/svg')) {
-                    content += `<img src="${src}" alt="${alt}">\n\n`;
-                }
-                processedElements.add(node);
-                continue;
-            }
-            
-            // 处理标题
-            if (node.tagName && node.tagName.match(/^H[1-6]$/)) {
-                const text = node.textContent.trim();
-                if (text && text.length > 5) {
-                    content += `<${node.tagName.toLowerCase()}>${text}</${node.tagName.toLowerCase()}>\n\n`;
-                    processedElements.add(node);
-                    // 标记所有子节点为已处理
-                    const childWalker = this.createCompatibleTreeWalker(node);
-                    let childNode;
-                    while (childNode = childWalker.nextNode()) {
-                        processedElements.add(childNode);
-                    }
-                }
-                continue;
-            }
-            
-            // 处理列表
-            if (node.tagName === 'UL' || node.tagName === 'OL') {
-                const listContent = this.extractListContent(node);
-                if (listContent.trim()) {
-                    content += `<${node.tagName.toLowerCase()}>\n${listContent}</${node.tagName.toLowerCase()}>\n\n`;
-                    processedElements.add(node);
-                    // 标记所有子节点为已处理
-                    const childWalker = this.createCompatibleTreeWalker(node);
-                    let childNode;
-                    while (childNode = childWalker.nextNode()) {
-                        processedElements.add(childNode);
-                    }
-                }
-                continue;
-            }
-            
-            // 处理段落
-            if (node.tagName === 'P') {
-                const paraContent = this.extractParagraphContent(node);
-                if (paraContent.trim()) {
-                    content += `<p>${paraContent}</p>\n\n`;
-                    processedElements.add(node);
-                    // 标记所有子节点为已处理
-                    const childWalker = this.createCompatibleTreeWalker(node);
-                    let childNode;
-                    while (childNode = childWalker.nextNode()) {
-                        processedElements.add(childNode);
-                    }
-                }
-                continue;
-            }
-            
-            // 处理strong标签（保留strong标签并提取其内容）
-            if (node.tagName === 'STRONG' || node.tagName === 'B') {
-                const strongContent = this.extractStrongContent(node);
-                if (strongContent.trim()) {
-                    content += `<strong>${strongContent}</strong>\n\n`;
-                    processedElements.add(node);
-                    // 标记所有子节点为已处理
-                    const childWalker = this.createCompatibleTreeWalker(node);
-                    let childNode;
-                    while (childNode = childWalker.nextNode()) {
-                        processedElements.add(childNode);
-                    }
-                }
-                continue;
-            }
-            
-            // 处理独立的span元素（不在p、li内的）
-            if (node.tagName === 'SPAN' && !this.isInsideTargetTags(node)) {
-                const text = node.textContent.trim();
-                if (text && text.length > 10 && !this.isNavigationOrUI(text)) {
-                    // 独立的span转换为div
-                    content += `<div>${text}</div>\n\n`;
-                    processedElements.add(node);
-                }
-                continue;
-            }
-            
-            // 处理div容器
-            if (node.tagName === 'DIV') {
-                const text = this.getDirectTextContent(node);
-                if (text && text.length > 10 && !this.isNavigationOrUI(text)) {
-                    content += `<div>${text}</div>\n\n`;
-                    processedElements.add(node);
-                } else {
-                    // 如果div没有直接文本内容，检查是否有子元素需要处理
-                    const fullText = node.textContent.trim();
-                    if (fullText && fullText.length > 5 && !this.isNavigationOrUI(fullText)) {
-                        // 检查是否是相邻div的一部分，需要合并处理
-                        const nextSibling = node.nextElementSibling;
-                        if (nextSibling && nextSibling.tagName === 'DIV') {
-                            const nextText = nextSibling.textContent.trim();
-                            if (nextText && !this.isNavigationOrUI(nextText)) {
-                                // 合并相邻div的内容
-                                const combinedText = fullText + nextText;
-                                if (combinedText.length > 10) {
-                                    content += `<div>${combinedText}</div>\n\n`;
-                                    processedElements.add(node);
-                                    processedElements.add(nextSibling);
-                                }
-                            }
-                        } else {
-                            // 单独处理这个div
-                            content += `<div>${fullText}</div>\n\n`;
-                            processedElements.add(node);
-                        }
-                    }
-                }
-            }
-        }
-        
-        return content;
-    }
-    
-    /**
-     * 提取列表内容
-     */
-    extractListContent(listElement) {
-        let content = '';
-        const listItems = listElement.querySelectorAll('li');
-        
-        listItems.forEach(li => {
-            const itemContent = this.extractListItemContent(li);
-            if (itemContent.trim()) {
-                content += `<li>${itemContent}</li>\n`;
-            }
-        });
-        
-        return content;
-    }
-    
-    /**
-     * 提取列表项内容
-     */
-    extractListItemContent(liElement) {
-        let content = '';
-        
-        // 遍历li的所有子节点
-        for (let child of liElement.childNodes) {
-            if (child.nodeType === 3) { // Node.TEXT_NODE
-                const text = child.textContent.trim();
-                if (text) {
-                    // 检查是否应该用span包装
-                    if (this.shouldUseSpan(liElement)) {
-                        content += `<span>${text}</span>`;
-                    } else {
-                        content += `<div>${text}</div>`;
-                    }
-                }
-            } else if (child.nodeType === 1) { // Node.ELEMENT_NODE
-                if (child.tagName === 'SPAN') {
-                    const text = child.textContent.trim();
-                    if (text) {
-                        // 在li内的span，检查是否应该保留span
-                        if (this.shouldUseSpan(liElement)) {
-                            content += `<span>${text}</span>`;
-                        } else {
-                            content += `<div>${text}</div>`;
-                        }
-                    }
-                } else if (child.tagName === 'IMG') {
-                    const src = child.getAttribute('src') || child.getAttribute('data-src');
-                    const alt = child.getAttribute('alt') || '';
-                    if (src && !src.includes('data:image/svg')) {
-                        content += `<img src="${src}" alt="${alt}">`;
-                    }
-                } else {
-                    // 递归处理其他元素
-                    const text = child.textContent.trim();
-                    if (text && !this.isNavigationOrUI(text)) {
-                        if (this.shouldUseSpan(liElement)) {
-                            content += `<span>${text}</span>`;
-                        } else {
-                            content += `<div>${text}</div>`;
-                        }
-                    }
-                }
-            }
-            
-            // 在元素之间添加适当的空格或换行
-            if (content && !content.endsWith(' ') && !content.endsWith('\n')) {
-                content += ' ';
-            }
-        }
-        
-        return content.trim();
-    }
-    
-    /**
-     * 提取段落内容（保持原始HTML结构）
-     */
-    extractParagraphContent(pElement) {
-        let content = '';
-        
-        // 遍历p的所有子节点
-        for (let child of pElement.childNodes) {
-            if (child.nodeType === 3) { // Node.TEXT_NODE
-                const text = child.textContent.trim();
-                if (text) {
-                    content += text;
-                }
-            } else if (child.nodeType === 1) { // Node.ELEMENT_NODE
-                if (child.tagName === 'STRONG' || child.tagName === 'B') {
-                    // 保持strong标签的原始结构
-                    content += this.preserveElementStructure(child);
-                } else if (child.tagName === 'SPAN') {
-                    // 保持span标签的原始结构
-                    content += this.preserveElementStructure(child);
-                } else if (child.tagName === 'IMG') {
-                    const src = child.getAttribute('src') || child.getAttribute('data-src');
-                    const alt = child.getAttribute('alt') || '';
-                    if (src && !src.includes('data:image/svg')) {
-                        content += `<img src="${src}" alt="${alt}">`;
-                    }
-                } else {
-                    // 其他元素，提取文本内容
-                    const text = child.textContent.trim();
-                    if (text) {
-                        content += text;
-                    }
-                }
-            }
-            
-            // 在元素之间添加适当的空格
-            if (content && !content.endsWith(' ') && !content.endsWith('\n')) {
-                content += ' ';
-            }
-        }
-        
-        return content.trim();
-    }
-
-    /**
-     * 提取strong元素内容
-     */
-    extractStrongContent(strongElement) {
-        let content = '';
-        
-        // 遍历strong的所有子节点
-        for (let child of strongElement.childNodes) {
-            if (child.nodeType === 3) { // Node.TEXT_NODE
-                const text = child.textContent.trim();
-                if (text) {
-                    content += text;
-                }
-            } else if (child.nodeType === 1) { // Node.ELEMENT_NODE
-                if (child.tagName === 'SPAN') {
-                    // 处理嵌套的span
-                    const spanText = this.extractNestedSpanContent(child);
-                    if (spanText) {
-                        content += spanText;
-                    }
-                } else {
-                    // 其他元素，提取文本内容
-                    const text = child.textContent.trim();
-                    if (text) {
-                        content += text;
-                    }
-                }
-            }
-        }
-        
-        return content.trim();
-    }
-
-    /**
-     * 保持元素结构（用于段落内的元素）
-     */
-    preserveElementStructure(element) {
-        let result = `<${element.tagName.toLowerCase()}`;
-        
-        // 保留必要的属性
-        const attrs = element.attributes || [];
-        for (let i = 0; i < attrs.length; i++) {
-            const attr = attrs[i];
-            if (this.preservedAttributes.has(attr.name)) {
-                result += ` ${attr.name}="${attr.value}"`;
-            }
-        }
-        
-        result += '>';
-        
-        // 处理子节点
-        for (let child of element.childNodes) {
-            if (child.nodeType === 3) { // Text node
-                result += child.textContent;
-            } else if (child.nodeType === 1) { // Element node
-                result += this.preserveElementStructure(child);
-            }
-        }
-        
-        result += `</${element.tagName.toLowerCase()}>`;
-        return result;
-    }
-
-    /**
-     * 提取嵌套span内容
-     */
-    extractNestedSpanContent(spanElement) {
-        let content = '';
-        
-        // 遍历span的所有子节点
-        for (let child of spanElement.childNodes) {
-            if (child.nodeType === 3) { // Node.TEXT_NODE
-                const text = child.textContent.trim();
-                if (text) {
-                    content += text;
-                }
-            } else if (child.nodeType === 1) { // Node.ELEMENT_NODE
-                if (child.tagName === 'SPAN') {
-                    // 递归处理嵌套的span
-                    const nestedSpanText = this.extractNestedSpanContent(child);
-                    if (nestedSpanText) {
-                        content += nestedSpanText;
-                    }
-                } else {
-                    // 其他元素，提取文本内容
-                    const text = child.textContent.trim();
-                    if (text) {
-                        content += text;
-                    }
-                }
-            }
-        }
-        
-        return content.trim();
-    }
-
-    /**
-     * 检查元素是否在目标标签内
-     */
-    isInsideTargetTags(element) {
-        const targetTags = ['P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'];
-        let parent = element.parentElement;
-        while (parent) {
-            if (targetTags.includes(parent.tagName)) {
-                return true;
-            }
-            parent = parent.parentElement;
-        }
-        return false;
-    }
-
-    /**
-     * 判断是否应该使用span标签
-     */
-    shouldUseSpan(element) {
-        // 检查父元素类型来决定是否使用span
-        const parent = element.parentElement;
-        if (parent) {
-            return parent.tagName === 'P' || parent.tagName === 'LI';
-        }
-        return false;
-    }
-
-    /**
-     * 获取元素的直接文本内容（不包括子元素）
-     */
-    getDirectTextContent(element) {
-        let text = '';
-        for (let child of element.childNodes) {
-            if (child.nodeType === 3) { // Node.TEXT_NODE
-                text += child.textContent;
-            }
-        }
-        return text.trim();
-    }
-
-    /**
-     * 备用内容提取方法
-     */
-    extractContentFallback(document) {
-        let content = '';
-        const processedElements = new Set();
-        
-        // 遍历body下的所有元素
-         const body = document.body || document.documentElement;
-         if (!body) return content;
-         
-         const walker = this.createCompatibleTreeWalker(body);
-        
-        let node;
-        while (node = walker.nextNode()) {
-            if (processedElements.has(node)) continue;
-            
-            const tagName = node.tagName;
-            
-            // 处理图片
-            if (tagName === 'IMG') {
-                const src = node.getAttribute('src') || node.getAttribute('data-src');
-                const alt = node.getAttribute('alt') || '';
-                if (src && !src.includes('data:image/svg')) {
-                    content += `<img src="${src}" alt="${alt}">\n\n`;
-                }
-                processedElements.add(node);
-                continue;
-            }
-            
-            // 处理标题
-            if (tagName && tagName.match(/^H[1-6]$/)) {
-                const text = node.textContent.trim();
-                if (text && text.length > 5) {
-                    content += `<${tagName.toLowerCase()}>${text}</${tagName.toLowerCase()}>\n\n`;
-                    processedElements.add(node);
-                }
-                continue;
-            }
-            
-            // 处理列表
-            if (tagName === 'UL' || tagName === 'OL') {
-                const listContent = this.extractListContent(node);
-                if (listContent.trim()) {
-                    content += `<${tagName.toLowerCase()}>\n${listContent}</${tagName.toLowerCase()}>\n\n`;
-                    processedElements.add(node);
-                }
-                continue;
-            }
-            
-            // 处理段落
-            if (tagName === 'P') {
-                const paraContent = this.extractParagraphContent(node);
-                if (paraContent.trim()) {
-                    content += `<p>${paraContent}</p>\n\n`;
-                    processedElements.add(node);
-                }
-                continue;
-            }
-            
-            // 处理div
-            if (tagName === 'DIV') {
-                const text = node.textContent.trim();
-                if (text && text.length > 10 && !this.isNavigationOrUI(text)) {
-                    const paragraphs = this.splitIntoParagraphs(text);
-                    content += paragraphs.map(p => `<p>${p}</p>`).join('\n') + '\n\n';
-                    processedElements.add(node);
-                }
-            }
-        }
-        
-        return content;
-    }
-
-    /**
-     * 判断文本是否为导航或UI元素
-     */
-    isNavigationOrUI(text) {
-        const uiKeywords = [
-            '点击', '查看', '更多', '展开', '收起', '关闭', '返回', '首页', '登录', '注册',
-            '分享', '转发', '评论', '点赞', '收藏', '关注', '取消', '确定', '提交',
-            '搜索', '筛选', '排序', '刷新', '加载', '下一页', '上一页', '跳转',
-            '菜单', '导航', '标签', '按钮', '链接', '广告', '推广', '赞助',
-            'click', 'view', 'more', 'expand', 'collapse', 'close', 'back', 'home',
-            'login', 'register', 'share', 'forward', 'comment', 'like', 'favorite',
-            'follow', 'cancel', 'confirm', 'submit', 'search', 'filter', 'sort',
-            'refresh', 'load', 'next', 'previous', 'jump', 'menu', 'navigation',
-            'tab', 'button', 'link', 'ad', 'advertisement', 'sponsor'
-        ];
-        
-        const lowerText = text.toLowerCase();
-        const hasSubstantialContent = text.length > 50;
-        
-        // 如果文本很长，可能包含实质内容，不应该被过滤
-        if (hasSubstantialContent) {
-            // 检查是否主要由UI关键词组成
-            const uiWordCount = uiKeywords.filter(keyword => lowerText.includes(keyword)).length;
-            return uiWordCount > 3; // 如果包含超过3个UI关键词，认为是UI文本
-        }
-        
-        // 短文本，检查是否包含UI关键词
-        return uiKeywords.some(keyword => lowerText.includes(keyword));
-    }
-
-    /**
-     * 将长文本分割成段落
-     */
-    splitIntoParagraphs(text) {
-        const sentences = text.split(/[。！？.!?]/);
-        const paragraphs = [];
-        let currentPara = '';
-        
-        for (let i = 0; i < sentences.length; i += 2) {
-            const sentence = sentences[i].trim();
-            if (currentPara.length + sentence.length > 200 && currentPara) {
-                paragraphs.push(currentPara.trim());
-                currentPara = sentence;
-            } else {
-                currentPara += sentence;
-            }
-        }
-        
-        if (currentPara) {
-            paragraphs.push(currentPara.trim());
-        }
-        
-        return paragraphs.filter(p => p.length > 0);
-     }
-
-    /**
-     * 创建兼容的TreeWalker，适配Zotero环境
-     */
-    createCompatibleTreeWalker(root) {
-        try {
-            // 尝试使用标准的TreeWalker
-            if (root.ownerDocument && root.ownerDocument.createTreeWalker) {
-                return root.ownerDocument.createTreeWalker(
-                    root,
-                    1, // NodeFilter.SHOW_ELEMENT
-                    null,
-                    false
-                );
-            }
-            
-            // 如果标准方法不可用，使用备用方法
-            return this.createFallbackTreeWalker(root);
-        } catch (error) {
-            this.warn('TreeWalker创建失败，使用备用方法:', error);
-            return this.createFallbackTreeWalker(root);
+    log(message) {
+        if (typeof Zotero !== 'undefined' && Zotero.debug) {
+            Zotero.debug(`[WxHtmlCleaner] ${message}`);
+        } else if (typeof console !== 'undefined') {
+            console.log(`[WxHtmlCleaner] ${message}`);
         }
     }
 
     /**
-     * 备用TreeWalker实现
+     * 错误输出
      */
-    createFallbackTreeWalker(root) {
-        const elements = [];
-        
-        // 递归收集所有元素节点
-        const collectElements = (node) => {
-            if (node.nodeType === 1) { // Element node
-                elements.push(node);
-            }
-            for (let child of node.childNodes || []) {
-                collectElements(child);
-            }
-        };
-        
-        collectElements(root);
-        
-        let currentIndex = -1;
-        
-        return {
-            nextNode: () => {
-                currentIndex++;
-                return currentIndex < elements.length ? elements[currentIndex] : null;
-            }
-        };
-    }
-
-    /**
-     * 兼容的日志方法
-     */
-    log(message, ...args) {
-        if (typeof console !== 'undefined' && console.log) {
-            console.log(message, ...args);
+    error(message, error) {
+        if (typeof Zotero !== 'undefined' && Zotero.debug) {
+            Zotero.debug(`[WxHtmlCleaner ERROR] ${message}: ${error}`);
+        } else if (typeof console !== 'undefined') {
+            console.error(`[WxHtmlCleaner ERROR] ${message}`, error);
         }
     }
+}
 
-    warn(message, ...args) {
-        if (typeof console !== 'undefined' && console.warn) {
-            console.warn(message, ...args);
-        }
-    }
-
-    error(message, ...args) {
-        if (typeof console !== 'undefined' && console.error) {
-            console.error(message, ...args);
-        }
-    }
- }
-
-// 导出类
+// 导出类供Zotero插件使用
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = HTMLCleaner;
 } else if (typeof window !== 'undefined') {
